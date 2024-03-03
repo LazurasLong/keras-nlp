@@ -140,15 +140,23 @@ class BartPreprocessor(Preprocessor):
     ):
         super().__init__(**kwargs)
         self.tokenizer = tokenizer
+        self.encoder_packer = None
+        self.decoder_packer = None
+        self.encoder_sequence_length = encoder_sequence_length
+        self.decoder_sequence_length = decoder_sequence_length
+
+    def build(self, input_shape):
+        # Defer packer creation to `build()` so that we can be sure tokenizer
+        # assets have loaded when restoring a saved model.
 
         # TODO: Use `MultiSegmentPacker` instead of `StartEndPacker` once we
         # want to move to multi-segment packing and have improved
         # `MultiSegmentPacker`'s performance.
         self.encoder_packer = StartEndPacker(
-            start_value=tokenizer.start_token_id,
-            end_value=tokenizer.end_token_id,
-            pad_value=tokenizer.pad_token_id,
-            sequence_length=encoder_sequence_length,
+            start_value=self.tokenizer.start_token_id,
+            end_value=self.tokenizer.end_token_id,
+            pad_value=self.tokenizer.pad_token_id,
+            sequence_length=self.encoder_sequence_length,
             return_padding_mask=True,
         )
 
@@ -161,21 +169,22 @@ class BartPreprocessor(Preprocessor):
             ],
             end_value=self.tokenizer.end_token_id,
             pad_value=self.tokenizer.pad_token_id,
-            sequence_length=decoder_sequence_length,
+            sequence_length=self.decoder_sequence_length,
             return_padding_mask=True,
         )
+        self.built = True
 
-    def get_config(self):
-        config = super().get_config()
-        config.update(
-            {
-                "encoder_sequence_length": self.encoder_packer.sequence_length,
-                "decoder_sequence_length": self.decoder_packer.sequence_length,
-            }
-        )
-        return config
-
-    def call(self, x, y=None, sample_weight=None):
+    def call(
+        self,
+        x,
+        y=None,
+        sample_weight=None,
+        *,
+        encoder_sequence_length=None,
+        decoder_sequence_length=None,
+        # `sequence_length` is an alias for `decoder_sequence_length`
+        sequence_length=None,
+    ):
         if not (
             isinstance(x, dict)
             and all(k in x for k in ("encoder_text", "decoder_text"))
@@ -184,6 +193,12 @@ class BartPreprocessor(Preprocessor):
                 '`x` must be a dictionary, containing the keys `"encoder_text"`'
                 f' and `"decoder_text"`. Received x={x}.'
             )
+
+        if encoder_sequence_length is None:
+            encoder_sequence_length = self.encoder_sequence_length
+        decoder_sequence_length = decoder_sequence_length or sequence_length
+        if decoder_sequence_length is None:
+            decoder_sequence_length = self.decoder_sequence_length
 
         encoder_text = x["encoder_text"]
         decoder_text = x["decoder_text"]
@@ -200,12 +215,14 @@ class BartPreprocessor(Preprocessor):
 
         encoder_inputs = self.tokenizer(encoder_text[0])
         encoder_token_ids, encoder_padding_mask = self.encoder_packer(
-            encoder_inputs
+            encoder_inputs,
+            sequence_length=encoder_sequence_length,
         )
 
         decoder_inputs = self.tokenizer(decoder_text[0])
         decoder_token_ids, decoder_padding_mask = self.decoder_packer(
-            decoder_inputs
+            decoder_inputs,
+            sequence_length=decoder_sequence_length,
         )
 
         x = {
@@ -217,6 +234,47 @@ class BartPreprocessor(Preprocessor):
 
         return pack_x_y_sample_weight(x, y, sample_weight)
 
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "encoder_sequence_length": self.encoder_sequence_length,
+                "decoder_sequence_length": self.decoder_sequence_length,
+            }
+        )
+        return config
+
+    @property
+    def encoder_sequence_length(self):
+        """The padded length of encoder input sequences."""
+        return self._encoder_sequence_length
+
+    @encoder_sequence_length.setter
+    def encoder_sequence_length(self, value):
+        self._encoder_sequence_length = value
+        if self.encoder_packer is not None:
+            self.encoder_packer.sequence_length = value
+
+    @property
+    def decoder_sequence_length(self):
+        """The padded length of decoder input sequences."""
+        return self._decoder_sequence_length
+
+    @decoder_sequence_length.setter
+    def decoder_sequence_length(self, value):
+        self._decoder_sequence_length = value
+        if self.decoder_packer is not None:
+            self.decoder_packer.sequence_length = value
+
+    @property
+    def sequence_length(self):
+        """Alias for `decoder_sequence_length`."""
+        return self.decoder_sequence_length
+
+    @sequence_length.setter
+    def sequence_length(self, value):
+        self.decoder_sequence_length = value
+
     @classproperty
     def tokenizer_cls(cls):
         return BartTokenizer
@@ -224,63 +282,3 @@ class BartPreprocessor(Preprocessor):
     @classproperty
     def presets(cls):
         return copy.deepcopy(backbone_presets)
-
-    @classmethod
-    def from_preset(
-        cls,
-        preset,
-        **kwargs,
-    ):
-        # Override base class's `from_preset` to handle `encoder_sequence_length`
-        # and `decoder_sequence_length`.
-        if not cls.presets:
-            raise NotImplementedError(
-                "No presets have been created for this class."
-            )
-        if preset not in cls.presets:
-            raise ValueError(
-                "`preset` must be one of "
-                f"""{", ".join(cls.presets)}. Received: {preset}."""
-            )
-
-        tokenizer = cls.tokenizer_cls.from_preset(preset)
-
-        metadata = cls.presets[preset]
-        # For task model presets, the backbone config is nested.
-        if "backbone" in metadata["config"]:
-            backbone_config = metadata["config"]["backbone"]["config"]
-        else:
-            backbone_config = metadata["config"]
-
-        # Use model's `max_sequence_length` if either `encoder_sequence_length`
-        # or `decoder_sequence_length` are unspecified; otherwise check that
-        # `encoder_sequence_length`/`decoder_sequence_length` are not too long.
-        encoder_sequence_length = kwargs.pop("encoder_sequence_length", None)
-        decoder_sequence_length = kwargs.pop("decoder_sequence_length", None)
-        max_sequence_length = backbone_config["max_sequence_length"]
-
-        def check_sequence_length(sequence_length, name):
-            if sequence_length is not None:
-                if sequence_length > max_sequence_length:
-                    raise ValueError(
-                        f"`{name}` cannot be longer than `{preset}` "
-                        f"preset's `max_sequence_length` of {max_sequence_length}. "
-                        f"Received: {sequence_length}."
-                    )
-                return sequence_length
-            else:
-                return max_sequence_length
-
-        encoder_sequence_length = check_sequence_length(
-            encoder_sequence_length, "encoder_sequence_length"
-        )
-        decoder_sequence_length = check_sequence_length(
-            decoder_sequence_length, "decoder_sequence_length"
-        )
-
-        return cls(
-            tokenizer=tokenizer,
-            encoder_sequence_length=encoder_sequence_length,
-            decoder_sequence_length=decoder_sequence_length,
-            **kwargs,
-        )

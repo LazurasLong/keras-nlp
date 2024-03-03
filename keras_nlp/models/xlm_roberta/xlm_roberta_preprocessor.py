@@ -156,22 +156,29 @@ class XLMRobertaPreprocessor(Preprocessor):
         super().__init__(**kwargs)
 
         self.tokenizer = tokenizer
+        self.packer = None
+        self.truncate = truncate
+        self.sequence_length = sequence_length
 
+    def build(self, input_shape):
+        # Defer packer creation to `build()` so that we can be sure tokenizer
+        # assets have loaded when restoring a saved model.
         self.packer = MultiSegmentPacker(
             start_value=self.tokenizer.start_token_id,
             end_value=self.tokenizer.end_token_id,
             sep_value=[self.tokenizer.end_token_id] * 2,
             pad_value=self.tokenizer.pad_token_id,
-            truncate=truncate,
-            sequence_length=sequence_length,
+            truncate=self.truncate,
+            sequence_length=self.sequence_length,
         )
+        self.built = True
 
     def get_config(self):
         config = super().get_config()
         config.update(
             {
-                "sequence_length": self.packer.sequence_length,
-                "truncate": self.packer.truncate,
+                "sequence_length": self.sequence_length,
+                "truncate": self.truncate,
             }
         )
         return config
@@ -185,6 +192,17 @@ class XLMRobertaPreprocessor(Preprocessor):
             "padding_mask": token_ids != self.tokenizer.pad_token_id,
         }
         return pack_x_y_sample_weight(x, y, sample_weight)
+
+    @property
+    def sequence_length(self):
+        """The padded length of model input sequences."""
+        return self._sequence_length
+
+    @sequence_length.setter
+    def sequence_length(self, value):
+        self._sequence_length = value
+        if self.packer is not None:
+            self.packer.sequence_length = value
 
     @classproperty
     def tokenizer_cls(cls):

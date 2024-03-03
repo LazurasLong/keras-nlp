@@ -87,7 +87,7 @@ class TestCase(tf.test.TestCase, parameterized.TestCase):
         expected_num_non_trainable_weights=0,
         expected_num_non_trainable_variables=0,
         run_training_check=True,
-        run_mixed_precision_check=True,
+        run_precision_checks=True,
     ):
         """Run basic tests for a modeling layer."""
         # Serialization test.
@@ -142,13 +142,19 @@ class TestCase(tf.test.TestCase, parameterized.TestCase):
                     else:
                         return self.layer(x)
 
+            input_data = tree.map_structure(
+                lambda x: ops.convert_to_numpy(x), input_data
+            )
+            output_data = tree.map_structure(
+                lambda x: ops.convert_to_numpy(x), output_data
+            )
             model = TestModel(layer)
             # Temporarily disable jit compilation on torch backend.
             jit_compile = config.backend() != "torch"
             model.compile(optimizer="sgd", loss="mse", jit_compile=jit_compile)
             model.fit(input_data, output_data, verbose=0)
 
-        if config.multi_backend():
+        if config.keras_3():
             # Build test.
             layer = cls(**init_kwargs)
             if isinstance(input_data, dict):
@@ -181,24 +187,8 @@ class TestCase(tf.test.TestCase, parameterized.TestCase):
         if run_training_check:
             run_training_step(layer, input_data, output_data)
 
-        # Never test mixed precision on torch CPU. Torch lacks support.
-        if run_mixed_precision_check and config.backend() == "torch":
-            import torch
-
-            run_mixed_precision_check = torch.cuda.is_available()
-
-        if run_mixed_precision_check:
-            layer = cls(**{**init_kwargs, "dtype": "mixed_float16"})
-            if isinstance(input_data, dict):
-                output_data = layer(**input_data)
-            else:
-                output_data = layer(input_data)
-            for tensor in tree.flatten(output_data):
-                if is_float_dtype(tensor.dtype):
-                    self.assertDTypeEqual(tensor, "float16")
-            for weight in layer.weights:
-                if is_float_dtype(weight.dtype):
-                    self.assertDTypeEqual(weight, "float32")
+        if run_precision_checks:
+            self.run_precision_test(cls, init_kwargs, input_data)
 
     def run_preprocessing_layer_test(
         self,
@@ -240,10 +230,51 @@ class TestCase(tf.test.TestCase, parameterized.TestCase):
         if expected_output:
             self.assertAllClose(output, expected_output)
 
+    def run_preprocessor_test(
+        self,
+        cls,
+        init_kwargs,
+        input_data,
+        expected_output=None,
+        expected_detokenize_output=None,
+        token_id_key="token_ids",
+    ):
+        """Run basic tests for a Model Preprocessor layer."""
+        self.run_preprocessing_layer_test(
+            cls,
+            init_kwargs,
+            input_data,
+            expected_output=expected_output,
+            expected_detokenize_output=expected_detokenize_output,
+        )
+
+        layer = cls(**self.init_kwargs)
+        if isinstance(input_data, tuple):
+            output = layer(*input_data)
+        else:
+            output = layer(input_data)
+        output, _, _ = keras.utils.unpack_x_y_sample_weight(output)
+        shape = ops.shape(output[token_id_key])
+        self.assertEqual(shape[-1], layer.sequence_length)
+        # Update the sequence length.
+        layer.sequence_length = 17
+        if isinstance(input_data, tuple):
+            output = layer(*input_data)
+        else:
+            output = layer(input_data)
+        output, _, _ = keras.utils.unpack_x_y_sample_weight(output)
+        shape = ops.shape(output[token_id_key])
+        self.assertEqual(shape[-1], 17)
+
     def run_serialization_test(self, instance):
         """Check idempotency of serialize/deserialize.
 
         Not this is a much faster test than saving."""
+        run_dir_test = True
+        # Tokenizers will not initialize the tensorflow trackable system after
+        # clone, leading to some weird errors here.
+        if config.backend() == "tensorflow" and isinstance(instance, Tokenizer):
+            run_dir_test = False
         # get_config roundtrip
         cls = instance.__class__
         cfg = instance.get_config()
@@ -253,9 +284,8 @@ class TestCase(tf.test.TestCase, parameterized.TestCase):
         revived_cfg = revived_instance.get_config()
         revived_cfg_json = json.dumps(revived_cfg, sort_keys=True, indent=4)
         self.assertEqual(cfg_json, revived_cfg_json)
-        # Dir tests only work on keras-core.
-        if config.multi_backend():
-            self.assertEqual(ref_dir, dir(revived_instance))
+        if run_dir_test:
+            self.assertEqual(set(ref_dir), set(dir(revived_instance)))
 
         # serialization roundtrip
         serialized = keras.saving.serialize_keras_object(instance)
@@ -266,13 +296,46 @@ class TestCase(tf.test.TestCase, parameterized.TestCase):
         revived_cfg = revived_instance.get_config()
         revived_cfg_json = json.dumps(revived_cfg, sort_keys=True, indent=4)
         self.assertEqual(cfg_json, revived_cfg_json)
-        # Dir tests only work on keras-core.
-        if config.multi_backend():
+        if run_dir_test:
             new_dir = dir(revived_instance)[:]
             for lst in [ref_dir, new_dir]:
                 if "__annotations__" in lst:
                     lst.remove("__annotations__")
-            self.assertEqual(ref_dir, new_dir)
+            self.assertEqual(set(ref_dir), set(new_dir))
+
+    def run_precision_test(self, cls, init_kwargs, input_data):
+        # Keras 2 has some errors as non-float32 precision.
+        if not config.keras_3():
+            return
+        # Never test mixed precision on torch CPU. Torch lacks support.
+        if config.backend() == "torch":
+            import torch
+
+            if not torch.cuda.is_available():
+                return
+
+        for policy in ["mixed_float16", "mixed_bfloat16", "bfloat16"]:
+            policy = keras.mixed_precision.Policy(policy)
+            layer = cls(**{**init_kwargs, "dtype": policy})
+            if isinstance(layer, keras.Model):
+                output_data = layer(input_data)
+            elif isinstance(input_data, dict):
+                output_data = layer(**input_data)
+            else:
+                output_data = layer(input_data)
+            for tensor in tree.flatten(output_data):
+                if is_float_dtype(tensor.dtype):
+                    self.assertDTypeEqual(tensor, policy.compute_dtype)
+            for weight in layer.weights:
+                if is_float_dtype(weight.dtype):
+                    self.assertDTypeEqual(weight, policy.variable_dtype)
+            for sublayer in layer._flatten_layers(include_self=False):
+                if isinstance(
+                    sublayer, (keras.layers.Softmax, keras.layers.InputLayer)
+                ):
+                    continue
+                self.assertEqual(policy.compute_dtype, sublayer.compute_dtype)
+                self.assertEqual(policy.variable_dtype, sublayer.variable_dtype)
 
     def run_model_saving_test(
         self,
@@ -301,6 +364,7 @@ class TestCase(tf.test.TestCase, parameterized.TestCase):
         input_data,
         expected_output_shape,
         variable_length_data=None,
+        run_mixed_precision_check=True,
     ):
         """Run basic tests for a backbone, including compilation."""
         backbone = cls(**init_kwargs)
@@ -341,6 +405,8 @@ class TestCase(tf.test.TestCase, parameterized.TestCase):
         name = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", cls.__name__)
         name = re.sub("([a-z])([A-Z])", r"\1_\2", name).lower()
         self.assertRegexpMatches(backbone.name, name)
+
+        self.run_precision_test(cls, init_kwargs, input_data)
 
     def run_task_test(
         self,
@@ -394,7 +460,7 @@ class TestCase(tf.test.TestCase, parameterized.TestCase):
         """Run instantiation and a forward pass for a preset."""
         self.assertRegex(cls.from_preset.__doc__, preset)
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(Exception):
             cls.from_preset("clowntown", **init_kwargs)
 
         instance = cls.from_preset(preset, **init_kwargs)

@@ -127,23 +127,21 @@ class DistilBertPreprocessor(Preprocessor):
     ):
         super().__init__(**kwargs)
         self.tokenizer = tokenizer
+        self.packer = None
+        self.sequence_length = sequence_length
+        self.truncate = truncate
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        # Defer masker creation to `build()` so that we can be sure tokenizer
+        # assets have loaded when restoring a saved model.
         self.packer = MultiSegmentPacker(
             start_value=self.tokenizer.cls_token_id,
             end_value=self.tokenizer.sep_token_id,
             pad_value=self.tokenizer.pad_token_id,
-            truncate=truncate,
-            sequence_length=sequence_length,
+            truncate=self.truncate,
+            sequence_length=self.sequence_length,
         )
-
-    def get_config(self):
-        config = super().get_config()
-        config.update(
-            {
-                "sequence_length": self.packer.sequence_length,
-                "truncate": self.packer.truncate,
-            }
-        )
-        return config
 
     def call(self, x, y=None, sample_weight=None):
         x = convert_inputs_to_list_of_tensor_segments(x)
@@ -154,6 +152,27 @@ class DistilBertPreprocessor(Preprocessor):
             "padding_mask": token_ids != self.tokenizer.pad_token_id,
         }
         return pack_x_y_sample_weight(x, y, sample_weight)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "sequence_length": self.sequence_length,
+                "truncate": self.truncate,
+            }
+        )
+        return config
+
+    @property
+    def sequence_length(self):
+        """The padded length of model input sequences."""
+        return self._sequence_length
+
+    @sequence_length.setter
+    def sequence_length(self, value):
+        self._sequence_length = value
+        if self.packer is not None:
+            self.packer.sequence_length = value
 
     @classproperty
     def tokenizer_cls(cls):

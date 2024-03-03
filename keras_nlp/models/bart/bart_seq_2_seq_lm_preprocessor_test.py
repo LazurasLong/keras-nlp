@@ -21,7 +21,7 @@ from keras_nlp.models.bart.bart_tokenizer import BartTokenizer
 from keras_nlp.tests.test_case import TestCase
 
 
-class BartPreprocessorTest(TestCase):
+class BartSeq2SeqLMPreprocessorTest(TestCase):
     def setUp(self):
         self.vocab = ["<s>", "<pad>", "</s>", "air", "Ġair", "plane", "Ġat"]
         self.vocab += ["port", "<mask>"]
@@ -45,7 +45,7 @@ class BartPreprocessorTest(TestCase):
         )
 
     def test_preprocessor_basics(self):
-        self.run_preprocessing_layer_test(
+        self.run_preprocessor_test(
             cls=BartSeq2SeqLMPreprocessor,
             init_kwargs=self.init_kwargs,
             input_data=self.input_data,
@@ -59,6 +59,7 @@ class BartPreprocessorTest(TestCase):
                 [[0, 4, 5, 4, 7, 2, 1, 1]],
                 [[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]],
             ),
+            token_id_key="decoder_token_ids",
         )
 
     def test_generate_preprocess(self):

@@ -35,6 +35,8 @@ from keras_nlp.models.bert.bert_masked_lm_preprocessor import (
 )
 from keras_nlp.models.bert.bert_preprocessor import BertPreprocessor
 from keras_nlp.models.bert.bert_tokenizer import BertTokenizer
+from keras_nlp.models.bloom.bloom_backbone import BloomBackbone
+from keras_nlp.models.bloom.bloom_tokenizer import BloomTokenizer
 from keras_nlp.models.deberta_v3.deberta_v3_backbone import DebertaV3Backbone
 from keras_nlp.models.deberta_v3.deberta_v3_classifier import (
     DebertaV3Classifier,
@@ -63,6 +65,8 @@ from keras_nlp.models.distil_bert.distil_bert_preprocessor import (
 from keras_nlp.models.distil_bert.distil_bert_tokenizer import (
     DistilBertTokenizer,
 )
+from keras_nlp.models.electra.electra_backbone import ElectraBackbone
+from keras_nlp.models.electra.electra_tokenizer import ElectraTokenizer
 from keras_nlp.models.f_net.f_net_backbone import FNetBackbone
 from keras_nlp.models.f_net.f_net_classifier import FNetClassifier
 from keras_nlp.models.f_net.f_net_masked_lm import FNetMaskedLM
@@ -71,6 +75,13 @@ from keras_nlp.models.f_net.f_net_masked_lm_preprocessor import (
 )
 from keras_nlp.models.f_net.f_net_preprocessor import FNetPreprocessor
 from keras_nlp.models.f_net.f_net_tokenizer import FNetTokenizer
+from keras_nlp.models.gemma.gemma_backbone import GemmaBackbone
+from keras_nlp.models.gemma.gemma_causal_lm import GemmaCausalLM
+from keras_nlp.models.gemma.gemma_causal_lm_preprocessor import (
+    GemmaCausalLMPreprocessor,
+)
+from keras_nlp.models.gemma.gemma_preprocessor import GemmaPreprocessor
+from keras_nlp.models.gemma.gemma_tokenizer import GemmaTokenizer
 from keras_nlp.models.gpt2.gpt2_backbone import GPT2Backbone
 from keras_nlp.models.gpt2.gpt2_causal_lm import GPT2CausalLM
 from keras_nlp.models.gpt2.gpt2_causal_lm_preprocessor import (
@@ -87,6 +98,14 @@ from keras_nlp.models.gpt_neo_x.gpt_neo_x_preprocessor import (
     GPTNeoXPreprocessor,
 )
 from keras_nlp.models.gpt_neo_x.gpt_neo_x_tokenizer import GPTNeoXTokenizer
+from keras_nlp.models.llama.llama_backbone import LlamaBackbone
+from keras_nlp.models.mistral.mistral_backbone import MistralBackbone
+from keras_nlp.models.mistral.mistral_causal_lm import MistralCausalLM
+from keras_nlp.models.mistral.mistral_causal_lm_preprocessor import (
+    MistralCausalLMPreprocessor,
+)
+from keras_nlp.models.mistral.mistral_preprocessor import MistralPreprocessor
+from keras_nlp.models.mistral.mistral_tokenizer import MistralTokenizer
 from keras_nlp.models.opt.opt_backbone import OPTBackbone
 from keras_nlp.models.opt.opt_causal_lm import OPTCausalLM
 from keras_nlp.models.opt.opt_causal_lm_preprocessor import (

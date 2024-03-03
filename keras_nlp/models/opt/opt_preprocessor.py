@@ -120,16 +120,22 @@ class OPTPreprocessor(Preprocessor):
         super().__init__(**kwargs)
 
         self.tokenizer = tokenizer
+        self.packer = None
         self.sequence_length = sequence_length
         self.add_start_token = add_start_token
         self.add_end_token = add_end_token
+
+    def build(self, input_shape):
+        # Defer packer creation to `build()` so that we can be sure tokenizer
+        # assets have loaded when restoring a saved model.
         self.packer = StartEndPacker(
-            start_value=tokenizer.start_token_id,
-            end_value=tokenizer.end_token_id,
-            pad_value=tokenizer.pad_token_id,
-            sequence_length=sequence_length,
+            start_value=self.tokenizer.start_token_id,
+            end_value=self.tokenizer.end_token_id,
+            pad_value=self.tokenizer.pad_token_id,
+            sequence_length=self.sequence_length,
             return_padding_mask=True,
         )
+        self.built = True
 
     def get_config(self):
         config = super().get_config()
@@ -169,6 +175,17 @@ class OPTPreprocessor(Preprocessor):
             "padding_mask": padding_mask,
         }
         return pack_x_y_sample_weight(x, y, sample_weight)
+
+    @property
+    def sequence_length(self):
+        """The padded length of model input sequences."""
+        return self._sequence_length
+
+    @sequence_length.setter
+    def sequence_length(self, value):
+        self._sequence_length = value
+        if self.packer is not None:
+            self.packer.sequence_length = value
 
     @classproperty
     def presets(cls):
